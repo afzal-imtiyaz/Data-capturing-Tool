@@ -211,6 +211,19 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .fg2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .fg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
 .fspan2{grid-column:span 2;}
+
+/* ── OPSBANK WEB LINK ── */
+.bk-box{border:1.5px solid var(--line);border-radius:var(--radius);padding:10px 12px;background:var(--surface-2);}
+.bk-box.has-link{border-color:var(--info);background:var(--info-soft);}
+.bk-row{display:flex;align-items:center;gap:8px;}
+.bk-icon{width:22px;height:22px;border-radius:5px;background:var(--info);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;}
+.bk-box:not(.has-link) .bk-icon{background:var(--ink-muted);}
+.bk-link{flex:1;min-width:0;font-size:12.5px;font-weight:600;color:var(--info);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.bk-link:hover{text-decoration:underline;}
+.bk-copy{flex-shrink:0;}
+.bk-url-text{margin-top:7px;font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:5px 8px;word-break:break-all;user-select:all;}
+.bk-empty{font-size:12px;color:var(--ink-muted);display:flex;align-items:center;gap:8px;}
+.bk-count{font-family:var(--mono);font-size:9.5px;color:var(--ink-muted);margin-left:auto;font-weight:400;letter-spacing:0;}
 .fspan3{grid-column:span 3;}
 
 /* ========================================================
@@ -333,7 +346,7 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
   <div class="setup-hero">
     <div class="setup-eyebrow">Semi-automated metadata capture</div>
     <h1 class="setup-title">Goldset Metadata Extraction Tool</h1>
-    <p class="setup-sub">Load your Goldset Excel file and the folder of article PDFs. The tool matches each record to its PDF by TPA-ID, then lets you capture metadata field-by-field with keyboard shortcuts.</p>
+    <p class="setup-sub">Load your Goldset Excel file and the folder of article PDFs. The tool matches each record to its PDF by TPA-ID</p>
   </div>
 
   <div class="setup-grid">
@@ -891,6 +904,17 @@ function afterValuesRestored(snap){
 function finishRestore(snap){
   // Match PDFs
   S.rows.forEach(function(row){ var e=S.pdfIndex[row.tpaId]; row.pdf=e?e.file:null; });
+  // Recompute OPSBank web links (BK col) from the restored workbook
+  if(S.workbook && S.sheetName && S.bkCol>=0){
+    try{
+      var ws=S.workbook.Sheets[S.sheetName];
+      var data=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',blankrows:true});
+      S.rows.forEach(function(row){
+        var rd=data[row.sheetRow];
+        row.bkUrl = rd ? String(rd[S.bkCol]||'').trim() : '';
+      });
+    } catch(ex){ addLog('BK link restore error','warn'); }
+  }
   if(S.fileName){
     var pdfCount=Object.keys(S.pdfIndex).length;
     if(pdfCount){ var ps=document.getElementById('pdfStatus'); ps.textContent='✓ '+pdfCount+' PDFs restored'; ps.classList.add('visible'); }
@@ -1324,7 +1348,10 @@ function renderMetaForm(row){
   notesHtml+='<div>'+renderFieldInner('coverText',vals.coverText)+'</div>';
   notesHtml+='</div></div>';
 
-  body.innerHTML=ctxHtml+spHtml+idHtml+issHtml+pagHtml+notesHtml;
+  // OPSBank Web Link (BK column)
+  var bkHtml=renderBkLink(row);
+
+  body.innerHTML=ctxHtml+spHtml+idHtml+issHtml+pagHtml+notesHtml+bkHtml;
 
   // Wire smart paste
   document.getElementById('smartPasteArea').addEventListener('paste',function(){
@@ -1357,6 +1384,51 @@ function renderMetaForm(row){
   });
 
   updateValSummary();
+}
+
+function renderBkLink(row){
+  var url=(row.bkUrl||'').trim();
+  var valid=url && url.toUpperCase()!=='N/A' && url.toUpperCase()!=='NA' && /^https?:\/\//i.test(url);
+  var html='<div class="meta-section"><div class="meta-section-title">OPSBank Web Link<span class="bk-count">TPA-ID '+escHtml(row.tpaDisplay)+'</span></div>';
+  if(valid){
+    html+='<div class="bk-box has-link">';
+    html+='<div class="bk-row">';
+    html+='<div class="bk-icon">🔗</div>';
+    html+='<a class="bk-link" href="'+escHtml(url)+'" target="_blank" rel="noopener noreferrer" title="'+escHtml(url)+'">'+escHtml(url)+'</a>';
+    html+='<button type="button" class="btn btn-xs btn-ghost bk-copy" onclick="copyBkLink(this)" data-url="'+escHtml(url)+'" title="Copy link">Copy</button>';
+    html+='</div>';
+    html+='<div class="bk-url-text">'+escHtml(url)+'</div>';
+    html+='</div>';
+  } else {
+    html+='<div class="bk-box"><div class="bk-empty">🔗 <span>'+(url && url.toUpperCase().indexOf('N/A')>=0 ? 'No link (N/A) for this record' : 'No OPSBank web link found for this record')+'</span></div></div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+function copyBkLink(btn){
+  var url=btn.getAttribute('data-url');
+  if(!url) return;
+  var done=function(){
+    var orig=btn.textContent;
+    btn.textContent='Copied ✓';
+    setTimeout(function(){ btn.textContent=orig; },1200);
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(done).catch(function(){ fallbackCopy(url,done); });
+  } else {
+    fallbackCopy(url,done);
+  }
+}
+window.copyBkLink = copyBkLink;
+
+function fallbackCopy(text,cb){
+  var ta=document.createElement('textarea');
+  ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(ta);
+  if(cb) cb();
 }
 
 function renderField(key, value){
