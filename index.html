@@ -508,6 +508,7 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
 
     <div class="meta-footer">
       <div id="valSummary" class="val-summary empty" style="margin-bottom:10px;display:none;"></div>
+      <div class="drop-status" id="outputPathStatus" style="margin-bottom:8px;font-size:11px;"></div>
       <div class="btn-row">
         <button class="btn btn-primary" id="saveBtn" onclick="saveRecord(false)" disabled>
           💾 Save <span style="font-size:10px;opacity:.7;">(Ctrl+↵)</span>
@@ -516,6 +517,7 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
           Save &amp; Next <span style="font-size:10px;opacity:.7;">(Ctrl+⇧↵)</span>
         </button>
         <button class="btn btn-ghost btn-sm" id="revertBtn" onclick="revertRecord()" disabled>Revert</button>
+        <button class="btn btn-ghost btn-sm" onclick="chooseOutputFile()" title="Pick one file that every Save will update">📁 Set Save Location</button>
       </div>
     </div>
   </div>
@@ -625,7 +627,12 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
           <span><span>Records</span><strong id="ec1meta">0 records</strong></span>
           <span><span>Fields populated</span><strong id="ec1fields">—</strong></span>
         </div>
-        <button class="btn btn-primary" onclick="exportGoldset()">⬇ Export Goldset Output</button>
+        <div class="drop-status" id="outputPathStatusEx" style="margin-bottom:8px;font-size:11px;"></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="exportGoldset()">⬇ Export / Update Goldset Output</button>
+          <button class="btn btn-ghost btn-sm" onclick="chooseOutputFile()">📁 Change Save Location</button>
+        </div>
+        <div style="font-size:10.5px;color:var(--ink-muted);margin-top:6px;line-height:1.4;">Once a save location is set, this always updates that same file — no duplicate copies pile up in your downloads.</div>
       </div>
     </div>
 
@@ -705,6 +712,7 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
    FIELD DEFINITIONS
    ============================================================ */
 var FIELDS = [
+  {key:'identifier',  label:'Identifier',       shortcut:'',  mandatory:false, recommended:false, mono:true,  pattern:null},
   {key:'doi',         label:'DOI',              shortcut:'D', mandatory:false, recommended:true,  mono:true,  pattern:/^10\.\d{4,9}\/\S+$/},
   {key:'title',       label:'Article Title',    shortcut:'T', mandatory:true,  recommended:false, mono:false, pattern:null},
   {key:'volume',      label:'Volume',           shortcut:'V', mandatory:false, recommended:true,  mono:true,  pattern:null},
@@ -724,6 +732,7 @@ var FIELD_MAP = {};
 FIELDS.forEach(function(f){ FIELD_MAP[f.key] = f; });
 
 var ALIASES = {
+  identifier:['identifier'],
   doi:['doi','digital object identifier'],
   title:['title','article title'],
   volume:['volume no','volume number','volume','vol'],
@@ -795,7 +804,9 @@ var S = {
   resolvedExceptions:{},
   log:[],
   autoSaveEnabled: true,
-  lastSaveTime: null
+  lastSaveTime: null,
+  outputHandle: null,
+  outputFileName: null
 };
 
 /* ============================================================
@@ -1333,7 +1344,8 @@ function renderMetaForm(row){
   issHtml+='</div></div>';
 
   // Pagination & Date
-  var pagHtml='<div class="meta-section"><div class="meta-section-title">Pagination &amp; Date</div>';
+  var pagHtml='<div class="meta-section"><div class="meta-section-title">Identifier &amp; Pagination</div>';
+  pagHtml+='<div class="field-row">'+renderFieldInner('identifier',vals.identifier)+'<div style="font-size:10.5px;color:var(--ink-muted);margin-top:3px;line-height:1.4;">Manual entry only. Leave blank if Page Range is filled — unless Page Range contains "D", in which case Identifier is optional.</div></div>';
   pagHtml+=renderField('pageRange',vals.pageRange);
   pagHtml+='<div class="fg3">';
   pagHtml+='<div>'+renderFieldInner('month',vals.month)+'</div>';
@@ -1369,7 +1381,10 @@ function renderMetaForm(row){
   FIELDS.forEach(function(f){
     var el=document.getElementById('mf_'+f.key);
     if(!el) return;
-    el.addEventListener('input',function(){ liveValidate(f.key,this.value); });
+    el.addEventListener('input',function(){
+      liveValidate(f.key,this.value);
+      if(f.key==='identifier'||f.key==='pageRange') crossValidateIdentifier();
+    });
     el.addEventListener('blur',function(){
       var c=cleanVal(f.key,this.value);
       if(c!==this.value) this.value=c;
@@ -1379,11 +1394,46 @@ function renderMetaForm(row){
         var c=cleanVal(f.key,el.value);
         if(c!==el.value) el.value=c;
         liveValidate(f.key,el.value);
+        if(f.key==='identifier'||f.key==='pageRange') crossValidateIdentifier();
       },0);
     });
   });
 
+  crossValidateIdentifier();
   updateValSummary();
+}
+
+/* ============================================================
+   IDENTIFIER / PAGE RANGE CROSS-VALIDATION
+   Rule: if Page Range has a value and does NOT contain the
+   letter "D", Identifier must be left blank. If Page Range
+   contains "D", Identifier is optional either way. If Page
+   Range is empty, Identifier may be filled freely.
+   ============================================================ */
+function identifierConflict(rec){
+  var pr=String((rec&&rec.pageRange)||'').trim();
+  var id=String((rec&&rec.identifier)||'').trim();
+  if(!pr||!id) return false;
+  var hasD=/d/i.test(pr);
+  return !hasD;
+}
+function crossValidateIdentifier(){
+  var idEl=document.getElementById('mf_identifier');
+  var prEl=document.getElementById('mf_pageRange');
+  if(!idEl||!prEl) return;
+  var vm=document.getElementById('vm_identifier');
+  if(!vm) return;
+  var conflict=identifierConflict({pageRange:prEl.value,identifier:idEl.value});
+  if(conflict){
+    vm.className='val-msg err';
+    vm.innerHTML='✗ Page range available — Identifier should be left blank';
+  } else if(idEl.value.trim()){
+    vm.className='val-msg ok';
+    vm.innerHTML='✓ Valid';
+  } else {
+    vm.className='val-msg';
+    vm.innerHTML='';
+  }
 }
 
 function renderBkLink(row){
@@ -1513,6 +1563,7 @@ function evaluateRecord(rec){
   FIELDS.forEach(function(f){ if(f.recommended && !rec[f.key]) warnings.push('Missing '+f.label+' (recommended)'); });
   if(rec.doi && !/^10\.\d{4,9}\/\S+$/.test(rec.doi)) warnings.push('DOI format invalid');
   if(rec.pageRange && !/^\d+-\d+$/.test(rec.pageRange)) warnings.push('Page range format invalid');
+  if(identifierConflict(rec)) errors.push('Identifier must be blank when Page Range is present');
   if(rec.year && !/^(19|20)\d{2}$/.test(rec.year)) warnings.push('Year format invalid');
   var issueFlags=[rec.supplement,rec.part,rec.specialIssue].filter(Boolean).length;
   if(issueFlags>1) warnings.push('Multiple issue-type fields set — verify');
@@ -1593,6 +1644,7 @@ function saveRecord(andNext){
   var ev=evaluateRecord(rec);
   updateValSummary();
   updateExcBadge();
+  if(S.outputHandle){ flushWorkbookToOutput(); } // fire-and-forget: keeps the one output file in sync
   if(andNext){ nextIncomplete(); toast('Saved — opened next','ok'); }
   else { toast('Record saved','ok'); }
 }
@@ -1721,7 +1773,7 @@ function buildExceptions(){
   S.rows.forEach(function(row){
     var ev=evaluateRecord(row.values);
     ev.errors.forEach(function(e){
-      var type=e.indexOf('DOI')>=0?'Invalid DOI':e.indexOf('Title')>=0?'Missing Title':e.indexOf('Year')>=0?'Missing Year':'Missing Field';
+      var type=e.indexOf('DOI')>=0?'Invalid DOI':e.indexOf('Title')>=0?'Missing Title':e.indexOf('Year')>=0?'Missing Year':e.indexOf('Identifier')>=0?'Identifier Conflict':'Missing Field';
       if(e.indexOf('Missing')===0&&!row.values.doi&&e.indexOf('DOI')>=0) type='Missing DOI';
       if(e.indexOf('Missing')===0&&!row.values.title&&e.indexOf('Title')>=0) type='Missing Title';
       all.push({tpaId:row.tpaDisplay,title:row.context.sourceTitle||'—',type:type,field:e.replace('Missing ','').replace(' (recommended)',''),value:row.values[type.toLowerCase().replace(' ','')]||'',severity:'critical',status:S.resolvedExceptions[row.tpaId+'_'+e]?'Resolved':'Open'});
@@ -1816,8 +1868,80 @@ function renderExportMetrics(){
   document.getElementById('ec2crit').textContent=exc.filter(function(e){ return e.severity==='critical'; }).length;
 }
 
-function exportGoldset(){
+/* ============================================================
+   SINGLE-FILE PERSISTENT OUTPUT (File System Access API)
+   Lets the user pick one output file up front; every Save and
+   every Export overwrites that SAME file instead of creating a
+   new copy each time, so Export Center never accumulates
+   multiple Excel files.
+   ============================================================ */
+function outputSupported(){ return 'showSaveFilePicker' in window; }
+
+async function chooseOutputFile(){
+  if(!outputSupported()){
+    toast('This browser can\'t keep a fixed save location — each export will download a new file instead.','warning');
+    return;
+  }
+  try{
+    var suggested=(S.fileName?S.fileName.replace(/\.(xlsx|xls)$/i,''):'goldset')+'_updated.xlsx';
+    var handle=await window.showSaveFilePicker({
+      suggestedName:suggested,
+      types:[{description:'Excel Workbook',accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx']}}]
+    });
+    S.outputHandle=handle;
+    S.outputFileName=handle.name;
+    toast('Output file set: '+handle.name,'ok');
+    addLog('Output file location set: '+handle.name,'ok');
+    updateOutputPathUI();
+    if(S.workbook) await flushWorkbookToOutput();
+  } catch(err){
+    if(err && err.name!=='AbortError') toast('Could not set output file: '+err.message,'error');
+  }
+}
+window.chooseOutputFile = chooseOutputFile;
+
+async function flushWorkbookToOutput(){
+  if(!S.workbook || !S.outputHandle) return false;
+  try{
+    var wbout=XLSX.write(S.workbook,{bookType:'xlsx',type:'array'});
+    var writable=await S.outputHandle.createWritable();
+    await writable.write(wbout);
+    await writable.close();
+    S.lastSaveTime=Date.now();
+    updateOutputPathUI();
+    return true;
+  } catch(err){
+    toast('Auto-save to file failed: '+err.message,'error');
+    return false;
+  }
+}
+
+function updateOutputPathUI(){
+  ['outputPathStatus','outputPathStatusEx'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el) return;
+    if(S.outputHandle){
+      el.textContent='💾 Updating one file: '+S.outputFileName+(S.lastSaveTime?' · last saved '+new Date(S.lastSaveTime).toLocaleTimeString():' · not yet saved');
+      el.classList.add('visible');
+    } else {
+      el.textContent='';
+      el.classList.remove('visible');
+    }
+  });
+}
+window.updateOutputPathUI = updateOutputPathUI;
+
+async function exportGoldset(){
   if(!S.workbook){ toast('No workbook loaded','warning'); return; }
+  if(!S.outputHandle && outputSupported()){
+    await chooseOutputFile();
+  }
+  if(S.outputHandle){
+    var ok=await flushWorkbookToOutput();
+    if(ok){ toast('Saved to: '+S.outputFileName,'ok'); addLog('Exported Goldset (single file updated): '+S.outputFileName,'ok'); }
+    return;
+  }
+  // Fallback for browsers without File System Access API support
   var outName=(S.fileName?S.fileName.replace(/\.(xlsx|xls)$/i,''):'goldset')+'_updated.xlsx';
   XLSX.writeFile(S.workbook,outName);
   toast('Downloaded: '+outName,'ok');
@@ -1896,6 +2020,8 @@ function resetSession(){
   S.rows=[]; S.rowsByTpa={}; S.pdfIndex={}; S.unmatchedPdfs=[];
   S.currentTpaId=null; S.committedCount=0; S.resolvedExceptions={};
   S.sessionStart=Date.now(); S.log=[];
+  S.outputHandle=null; S.outputFileName=null; S.lastSaveTime=null;
+  updateOutputPathUI();
   document.getElementById('xlsStatus').textContent=''; document.getElementById('xlsStatus').classList.remove('visible');
   document.getElementById('pdfStatus').textContent=''; document.getElementById('pdfStatus').classList.remove('visible');
   document.getElementById('xlsInput').value='';
