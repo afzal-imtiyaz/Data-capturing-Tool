@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Goldset Metadata Extraction Tool</title>
+<title>Goldset Metadata | Extraction Tool</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23C08B1E'/%3E%3Ctext x='32' y='42' font-family='Arial,Helvetica,sans-serif' font-weight='700' font-size='26' fill='%230D4A45' text-anchor='middle'%3EGS%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -224,6 +225,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .bk-url-text{margin-top:7px;font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:5px 8px;word-break:break-all;user-select:all;}
 .bk-empty{font-size:12px;color:var(--ink-muted);display:flex;align-items:center;gap:8px;}
 .bk-count{font-family:var(--mono);font-size:9.5px;color:var(--ink-muted);margin-left:auto;font-weight:400;letter-spacing:0;}
+.toc-btn{margin-top:6px;}
+.doi-row{display:flex;flex-direction:column;}
+.doi-go-btn{margin-top:6px;align-self:flex-start;}
 .fspan3{grid-column:span 3;}
 
 /* ========================================================
@@ -312,7 +316,7 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
     <div class="nav-logo">GS</div>
     <div>
       <div class="nav-name">Goldset Metadata</div>
-      <div class="nav-sub">Extraction Tool v3</div>
+      <div class="nav-sub">Extraction Tool</div>
     </div>
   </div>
   <div class="nav-tabs">
@@ -703,6 +707,21 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
 
 <div class="toast-stack" id="toastStack"></div>
 
+<datalist id="monthDatalist">
+  <option value="January"></option>
+  <option value="February"></option>
+  <option value="March"></option>
+  <option value="April"></option>
+  <option value="May"></option>
+  <option value="June"></option>
+  <option value="July"></option>
+  <option value="August"></option>
+  <option value="September"></option>
+  <option value="October"></option>
+  <option value="November"></option>
+  <option value="December"></option>
+</datalist>
+
 <script>
 (function(){
 "use strict";
@@ -775,6 +794,8 @@ function persistMeta(){
     fileName:S.fileName, sheetName:S.sheetName,
     hri:S.headerRowIndex, tpaCol:S.tpaCol, colMap:S.colMap, ctxMap:S.contextMap,
     bkCol:S.bkCol,
+    agreementCol:S.agreementCol,
+    sourceCol:S.sourceCol,
     rows: S.rows.map(function(r){ return {sr:r.sheetRow,tpaId:r.tpaId,tpaDisplay:r.tpaDisplay,ctx:r.context,saved:r.saved}; }),
     currentTpaId: S.currentTpaId,
     resolved: S.resolvedExceptions,
@@ -792,6 +813,8 @@ var S = {
   workbook:null, sheetName:null, fileName:null,
   headerRowIndex:0, headers:[], tpaCol:-1, colMap:{}, contextMap:{},
   bkCol:-1,        // column index for BK (URL) field
+  agreementCol:-1, // column index for BM (Agreement URL) field
+  sourceCol:-1,    // column index for BN (Source URL) field
   rows:[], rowsByTpa:{},
   pdfIndex:{},     // normId -> {file:File, url:string}
   unmatchedPdfs:[],
@@ -805,7 +828,8 @@ var S = {
   autoSaveEnabled: true,
   lastSaveTime: null,
   outputHandle: null,
-  outputFileName: null
+  outputFileName: null,
+  lastAutoCoverText: null
 };
 
 /* ============================================================
@@ -816,7 +840,29 @@ function normId(s){ return String(s==null?'':s).trim().replace(/\.0+$/,'').repla
 function cleanVal(key,v){
   v=String(v==null?'':v).replace(/\s+/g,' ').trim();
   if(key==='pageRange') v=v.replace(/[\u2012\u2013\u2014\u2015\u2212]/g,'-').replace(/\s*-\s*/g,'-');
+  if(key==='month'){ var nm=normalizeMonth(v); if(nm) v=nm; }
   return v;
+}
+
+/* ============================================================
+   MONTH VALIDATION / AUTO-COMPLETION
+   ============================================================ */
+var MONTHS_FULL=['January','February','March','April','May','June','July','August','September','October','November','December'];
+var MONTH_ABBR_LU={jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September',sept:'September',oct:'October',nov:'November',dec:'December'};
+function normalizeMonth(v){
+  var t=String(v==null?'':v).trim();
+  if(!t) return '';
+  var low=t.toLowerCase();
+  for(var i=0;i<MONTHS_FULL.length;i++){ if(MONTHS_FULL[i].toLowerCase()===low) return MONTHS_FULL[i]; }
+  if(MONTH_ABBR_LU[low]) return MONTH_ABBR_LU[low];
+  var noDot=low.replace(/\.$/,'');
+  if(MONTH_ABBR_LU[noDot]) return MONTH_ABBR_LU[noDot];
+  return null;
+}
+function isValidMonth(v){
+  var t=String(v==null?'':v).trim();
+  if(!t) return true; // empty is not invalid, just unfilled
+  return MONTHS_FULL.indexOf(t)>=0;
 }
 function ts(){ return new Date().toLocaleTimeString(); }
 function addLog(msg,level){ S.log.push({time:ts(),msg:msg,level:level||'info'}); }
@@ -858,6 +904,8 @@ function restoreSession(){
       S.headerRowIndex=snap.hri||0; S.tpaCol=snap.tpaCol||0;
       S.colMap=snap.colMap||{}; S.contextMap=snap.ctxMap||{};
       S.bkCol=snap.bkCol!=null?snap.bkCol:-1;
+      S.agreementCol=snap.agreementCol!=null?snap.agreementCol:-1;
+      S.sourceCol=snap.sourceCol!=null?snap.sourceCol:-1;
       S.resolvedExceptions=snap.resolved||{}; S.sessionStart=snap.t0||Date.now();
       S.currentTpaId=snap.currentTpaId||null;
 
@@ -874,7 +922,7 @@ function restoreSession(){
         // Build rows skeleton
         S.rows=[]; S.rowsByTpa={};
         snap.rows.forEach(function(rm){
-          var row={sheetRow:rm.sr,tpaId:rm.tpaId,tpaDisplay:rm.tpaDisplay,context:rm.ctx||{},saved:rm.saved||false,pdf:null,values:{},bkUrl:''};
+          var row={sheetRow:rm.sr,tpaId:rm.tpaId,tpaDisplay:rm.tpaDisplay,context:rm.ctx||{},saved:rm.saved||false,pdf:null,values:{},bkUrl:'',agreementUrl:'',sourceUrl:''};
           FIELDS.forEach(function(f){ row.values[f.key]=''; });
           S.rows.push(row); S.rowsByTpa[rm.tpaId]=row;
         });
@@ -924,6 +972,18 @@ function finishRestore(snap){
         row.bkUrl = rd ? String(rd[S.bkCol]||'').trim() : '';
       });
     } catch(ex){ addLog('BK link restore error','warn'); }
+  }
+  // Recompute Agreement URL (BM col) and Source URL (BN col) from the restored workbook
+  if(S.workbook && S.sheetName && (S.agreementCol>=0 || S.sourceCol>=0)){
+    try{
+      var ws2=S.workbook.Sheets[S.sheetName];
+      var data2=XLSX.utils.sheet_to_json(ws2,{header:1,defval:'',blankrows:true});
+      S.rows.forEach(function(row){
+        var rd2=data2[row.sheetRow];
+        row.agreementUrl = (rd2 && S.agreementCol>=0) ? String(rd2[S.agreementCol]||'').trim() : '';
+        row.sourceUrl = (rd2 && S.sourceCol>=0) ? String(rd2[S.sourceCol]||'').trim() : '';
+      });
+    } catch(ex){ addLog('Agreement/Source link restore error','warn'); }
   }
   if(S.fileName){
     var pdfCount=Object.keys(S.pdfIndex).length;
@@ -1034,6 +1094,8 @@ function loadSheet(){
   S.colMap={};
   S.contextMap={};
   S.bkCol=-1;
+  S.agreementCol=-1;
+  S.sourceCol=-1;
   var CTX_DEF=[
     {key:'sourceTitle',aliases:['source title']},
     {key:'publisher',aliases:['publisher']},
@@ -1051,6 +1113,12 @@ function loadSheet(){
     var n=norm(h);
     // Detect BK column (header exactly "BK" or "URL" or "bk")
     if(n==='bk'||n==='url'||n==='link'||n==='bk url'||n==='opsbank web link') S.bkCol=i;
+    // Detect BM column (Agreement URL) — match exact aliases or any header
+    // containing both "agreement" and "url" (e.g. "Agreement URL from SR")
+    if(n==='bm'||n==='agreement url'||n==='agreementurl'||n==='agreement'||n==='agreement web link'||(n.indexOf('agreement')>=0&&n.indexOf('url')>=0)) S.agreementCol=i;
+    // Detect BN column (Source URL) — match exact aliases or any header
+    // containing both "source" and "url" (e.g. "Source URL from SR")
+    if(n==='bn'||n==='source url'||n==='sourceurl'||n==='source'||n==='source web link'||(n.indexOf('source')>=0&&n.indexOf('url')>=0)) S.sourceCol=i;
     var fkey=ALIAS_LU[n];
     if(fkey) S.colMap[fkey]=i;
     CTX_DEF.forEach(function(c){ if(c.aliases.some(function(a){ return norm(a)===n; })) S.contextMap[c.key]=i; });
@@ -1076,7 +1144,9 @@ function loadSheet(){
     var context={};
     Object.keys(S.contextMap).forEach(function(k){ context[k]=String(rowData[S.contextMap[k]]||'').trim(); });
     var bkUrl = S.bkCol>=0 ? String(rowData[S.bkCol]||'').trim() : '';
-    var rowObj={sheetRow:r,tpaId:normId(tpaRaw),tpaDisplay:tpaRaw,values:values,context:context,pdf:null,saved:!!existingVals[normId(tpaRaw)],bkUrl:bkUrl};
+    var agreementUrl = S.agreementCol>=0 ? String(rowData[S.agreementCol]||'').trim() : '';
+    var sourceUrl = S.sourceCol>=0 ? String(rowData[S.sourceCol]||'').trim() : '';
+    var rowObj={sheetRow:r,tpaId:normId(tpaRaw),tpaDisplay:tpaRaw,values:values,context:context,pdf:null,saved:!!existingVals[normId(tpaRaw)],bkUrl:bkUrl,agreementUrl:agreementUrl,sourceUrl:sourceUrl};
     S.rows.push(rowObj);
     S.rowsByTpa[rowObj.tpaId]=rowObj;
   }
@@ -1311,6 +1381,7 @@ window.dismissAutoExtract = dismissAutoExtract;
 function renderMetaForm(row){
   var body=document.getElementById('metaBody');
   var vals=row.values;
+  S.lastAutoCoverText=null;
 
   // Context section
   var ctxHtml='';
@@ -1328,7 +1399,7 @@ function renderMetaForm(row){
 
   // Identification
   var idHtml='<div class="meta-section"><div class="meta-section-title">Identification</div>';
-  idHtml+=renderField('doi',vals.doi);
+  idHtml+='<div class="field-row doi-row">'+renderFieldInner('doi',vals.doi)+'<button type="button" class="btn btn-xs btn-ghost doi-go-btn" onclick="openDoiLink()" title="Open DOI in a new tab">🔗 Open DOI</button></div>';
   idHtml+=renderField('title',vals.title);
   idHtml+='</div>';
 
@@ -1355,7 +1426,7 @@ function renderMetaForm(row){
   // Notes
   var notesHtml='<div class="meta-section"><div class="meta-section-title">Notes</div>';
   notesHtml+='<div class="fg2">';
-  notesHtml+='<div>'+renderFieldInner('remarks',vals.remarks)+'</div>';
+  notesHtml+='<div>'+renderFieldInner('remarks',vals.remarks)+'<button type="button" class="btn btn-xs btn-ghost toc-btn" onclick="addTocToRemarks()" title="Append TOC entry for this TPA-ID">+ Add TOC</button></div>';
   notesHtml+='<div>'+renderFieldInner('coverText',vals.coverText)+'</div>';
   notesHtml+='</div></div>';
 
@@ -1383,10 +1454,12 @@ function renderMetaForm(row){
     el.addEventListener('input',function(){
       liveValidate(f.key,this.value);
       if(f.key==='identifier'||f.key==='pageRange') crossValidateIdentifier();
+      if(f.key==='month'||f.key==='day'||f.key==='year') autoFillCoverText();
     });
     el.addEventListener('blur',function(){
       var c=cleanVal(f.key,this.value);
       if(c!==this.value) this.value=c;
+      if(f.key==='month'){ liveValidate(f.key,this.value); autoFillCoverText(); }
     });
     el.addEventListener('paste',function(){
       setTimeout(function(){
@@ -1394,11 +1467,13 @@ function renderMetaForm(row){
         if(c!==el.value) el.value=c;
         liveValidate(f.key,el.value);
         if(f.key==='identifier'||f.key==='pageRange') crossValidateIdentifier();
+        if(f.key==='month'||f.key==='day'||f.key==='year') autoFillCoverText();
       },0);
     });
   });
 
   crossValidateIdentifier();
+  autoFillCoverText();
   updateValSummary();
 }
 
@@ -1435,21 +1510,80 @@ function crossValidateIdentifier(){
   }
 }
 
+/* ============================================================
+   COVER TEXT AUTOMATION
+   Rule: Month + Year present, Day empty -> Cover Text = "Month Year"
+         Day present (with Month/Year), or Year only, or incomplete
+         -> Cover Text is left blank/untouched.
+   Only auto-fills/clears text this function itself set, so it
+   never overwrites a manually typed Cover Text value.
+   ============================================================ */
+function autoFillCoverText(){
+  var mEl=document.getElementById('mf_month');
+  var dEl=document.getElementById('mf_day');
+  var yEl=document.getElementById('mf_year');
+  var cEl=document.getElementById('mf_coverText');
+  if(!mEl||!yEl||!cEl) return;
+  var month=mEl.value.trim(), day=(dEl?dEl.value.trim():''), year=yEl.value.trim();
+  var current=cEl.value;
+  if(month && year && !day){
+    var auto=month+' '+year;
+    if(current===''||current===S.lastAutoCoverText){
+      if(current!==auto){ cEl.value=auto; liveValidate('coverText',cEl.value); }
+      S.lastAutoCoverText=auto;
+    }
+  } else {
+    if(S.lastAutoCoverText!==null && current===S.lastAutoCoverText){
+      cEl.value='';
+      liveValidate('coverText',cEl.value);
+    }
+    S.lastAutoCoverText=null;
+  }
+}
+window.autoFillCoverText = autoFillCoverText;
+
+/* Accepts full "https://…" URLs as well as bare domains/paths with no
+   scheme (e.g. "www.mdpi.com/journal/x"), which is how these cells are
+   often populated in the Goldset sheet. */
+function looksLikeUrl(u){
+  u=(u||'').trim();
+  if(!u) return false;
+  if(/^https?:\/\/\S+$/i.test(u)) return true;
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(\/\S*)?$/i.test(u);
+}
+function hrefForUrl(u){
+  u=(u||'').trim();
+  return /^https?:\/\//i.test(u) ? u : 'https://'+u;
+}
+
 function renderBkLink(row){
-  var url=(row.bkUrl||'').trim();
-  var valid=url && url.toUpperCase()!=='N/A' && url.toUpperCase()!=='NA' && /^https?:\/\//i.test(url);
-  var html='<div class="meta-section"><div class="meta-section-title">OPSBank Web Link<span class="bk-count">TPA-ID '+escHtml(row.tpaDisplay)+'</span></div>';
+  var html=renderUrlLinkBox('OPSBank Web Link', row.bkUrl, row.tpaDisplay);
+  html+=renderUrlLinkBox('Agreement URL', row.agreementUrl);
+  html+=renderUrlLinkBox('Source URL', row.sourceUrl);
+  return html;
+}
+
+/* Generic clickable-URL box used for the OPSBank Web Link (col BK),
+   Agreement URL (col BM) and Source URL (col BN) fields. */
+function renderUrlLinkBox(label, rawUrl, tpaDisplay){
+  var url=(rawUrl||'').trim();
+  var isNA = url && (url.toUpperCase()==='N/A' || url.toUpperCase()==='NA');
+  var valid = url && !isNA && looksLikeUrl(url);
+  var html='<div class="meta-section"><div class="meta-section-title">'+escHtml(label)+(tpaDisplay?'<span class="bk-count">TPA-ID '+escHtml(tpaDisplay)+'</span>':'')+'</div>';
   if(valid){
+    var href=hrefForUrl(url);
     html+='<div class="bk-box has-link">';
     html+='<div class="bk-row">';
     html+='<div class="bk-icon">🔗</div>';
-    html+='<a class="bk-link" href="'+escHtml(url)+'" target="_blank" rel="noopener noreferrer" title="'+escHtml(url)+'">'+escHtml(url)+'</a>';
+    html+='<a class="bk-link" href="'+escHtml(href)+'" target="_blank" rel="noopener noreferrer" title="'+escHtml(url)+'">'+escHtml(url)+'</a>';
     html+='<button type="button" class="btn btn-xs btn-ghost bk-copy" onclick="copyBkLink(this)" data-url="'+escHtml(url)+'" title="Copy link">Copy</button>';
     html+='</div>';
     html+='<div class="bk-url-text">'+escHtml(url)+'</div>';
     html+='</div>';
+  } else if(url && !isNA){
+    html+='<div class="bk-box"><div class="bk-empty">⚠ <span>Invalid URL format: '+escHtml(url)+'</span></div></div>';
   } else {
-    html+='<div class="bk-box"><div class="bk-empty">🔗 <span>'+(url && url.toUpperCase().indexOf('N/A')>=0 ? 'No link (N/A) for this record' : 'No OPSBank web link found for this record')+'</span></div></div>';
+    html+='<div class="bk-box"><div class="bk-empty">🔗 <span>'+(isNA?'No link (N/A) for this record':'No '+escHtml(label)+' found for this record')+'</span></div></div>';
   }
   html+='</div>';
   return html;
@@ -1494,6 +1628,8 @@ function renderFieldInner(key, value){
   html+='</label>';
   if(f.textarea){
     html+='<textarea class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" rows="2">'+escHtml(value||'')+'</textarea>';
+  } else if(key==='month'){
+    html+='<input class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" value="'+escHtml(value||'')+'" list="monthDatalist" autocomplete="off" placeholder="e.g. Jan, January">';
   } else {
     html+='<input class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" value="'+escHtml(value||'')+'">';
   }
@@ -1516,6 +1652,11 @@ function liveValidate(key, value){
   if(!value){
     if(f.mandatory){ vm.className='val-msg err'; vm.innerHTML='✗ Required field'; }
     else { vm.className='val-msg'; vm.innerHTML=''; }
+    return;
+  }
+  if(key==='month' && !isValidMonth(value)){
+    vm.className='val-msg warn'; vm.innerHTML='⚠ Enter a valid month name (e.g. Jan or January)';
+    updateValSummary();
     return;
   }
   if(f.pattern && !f.pattern.test(value)){
@@ -1554,6 +1695,43 @@ function flashField(key){
 }
 
 /* ============================================================
+   TOC AUTO-INSERT
+   Appends "<TPAID>-TOC.html" to the Remarks field, using the
+   TPA-ID of the current record. Remarks stays fully editable —
+   this only appends, never overwrites existing content.
+   ============================================================ */
+function addTocToRemarks(){
+  if(!S.currentTpaId){ toast('Open a record first','warning'); return; }
+  var row=S.rowsByTpa[S.currentTpaId];
+  if(!row) return;
+  var tpaId=row.tpaDisplay||row.tpaId||S.currentTpaId;
+  var entry=tpaId+'-TOC.html';
+  var el=document.getElementById('mf_remarks');
+  if(!el) return;
+  var cur=el.value;
+  el.value = (cur && cur.trim()) ? (cur.replace(/\s+$/,'')+'\n'+entry) : entry;
+  liveValidate('remarks',el.value);
+  flashField('remarks');
+  toast('TOC entry added to Remarks','ok');
+}
+window.addTocToRemarks = addTocToRemarks;
+
+/* ============================================================
+   DOI QUICK ACCESS
+   Opens https://doi.org/<DOI> in a new browser tab using the
+   DOI currently entered in the DOI field.
+   ============================================================ */
+function openDoiLink(){
+  var el=document.getElementById('mf_doi');
+  var doi=el?el.value.trim():'';
+  if(!doi){ toast('Enter a DOI first','warning'); return; }
+  doi=doi.replace(/^doi:\s*/i,'').replace(/^https?:\/\/(dx\.)?doi\.org\//i,'');
+  var url='https://doi.org/'+doi;
+  window.open(url,'_blank','noopener,noreferrer');
+}
+window.openDoiLink = openDoiLink;
+
+/* ============================================================
    VALIDATION
    ============================================================ */
 function evaluateRecord(rec){
@@ -1564,6 +1742,7 @@ function evaluateRecord(rec){
   if(rec.pageRange && !/^\d+-\d+$/.test(rec.pageRange)) warnings.push('Page range format invalid');
   if(identifierConflict(rec)) errors.push('Identifier must be blank when Page Range is present');
   if(rec.year && !/^(19|20)\d{2}$/.test(rec.year)) warnings.push('Year format invalid');
+  if(rec.month && !isValidMonth(rec.month)) warnings.push('Month name invalid');
   var issueFlags=[rec.supplement,rec.part,rec.specialIssue].filter(Boolean).length;
   if(issueFlags>1) warnings.push('Multiple issue-type fields set — verify');
   var status=FIELDS.filter(function(f){ return rec[f.key]; }).length===0?'empty':(errors.length?'error':(warnings.length?'warning':'ok'));
@@ -1706,7 +1885,7 @@ document.addEventListener('keydown',function(e){
     var shortcutMap={
       't':'title','d':'doi','v':'volume','i':'issue','s':'supplement',
       'p':'part','g':'specialIssue','r':'pageRange','m':'month','a':'day',
-      'y':'year','n':'remarks','c':'coverText'
+      'y':'year','n':'remarks'
     };
     var key=e.key.toLowerCase();
     if(shortcutMap[key]&&S.currentTpaId){
@@ -2050,7 +2229,7 @@ function escHtml(s){
    INIT
    ============================================================ */
 updateNavStats();
-addLog('Goldset Extraction Tool v3 ready','ok');
+addLog('Goldset Extraction Tool ready','ok');
 
 })();
 </script>
