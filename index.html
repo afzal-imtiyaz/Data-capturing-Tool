@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
 :root {
   --teal:#0D4A45; --teal-dark:#072F2B; --teal-mid:#1A6B64; --teal-tint:#E3EDEC; --teal-glow:#0D4A4522;
@@ -84,6 +85,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .field.mono{font-family:var(--mono);font-size:12px;}
 .field.flash-ok{animation:fieldFlash 700ms ease forwards;}
 @keyframes fieldFlash{0%{background:var(--ok-soft);border-color:var(--ok);}100%{background:var(--surface);border-color:var(--line);}}
+.field.pdf-match{background:#FFF6C4;border-color:#D8B400;}
+.field-conf.pdfmatch{background:#FFF3A8;color:#7A5E00;border:1px solid #D8B400;}
 .field-label{display:block;font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;}
 .field-label .shortcut{font-family:var(--mono);background:var(--surface-3);border:1px solid var(--line);border-radius:3px;padding:0px 4px;font-size:9px;color:var(--ink-muted);margin-left:4px;}
 .field-label .req{color:var(--gold);margin-left:2px;}
@@ -147,6 +150,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .queue-filters{display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;}
 .queue-filter-btn{font-size:10.5px;padding:3px 8px;border-radius:12px;border:1px solid var(--line);background:var(--surface-2);color:var(--ink-soft);cursor:pointer;transition:all var(--transition);}
 .queue-filter-btn.active{background:var(--teal);color:#fff;border-color:var(--teal);}
+.queue-provider-filter{margin-top:8px;}
+.queue-provider-filter select.field{font-size:11.5px;padding:6px 8px;}
 .queue-list{flex:1;overflow-y:auto;}
 .queue-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background var(--transition);position:relative;}
 .queue-item:hover{background:var(--surface-2);}
@@ -438,6 +443,11 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
       <div class="queue-search">
         <span class="queue-search-icon">🔍</span>
         <input type="search" class="field" id="queueSearch" placeholder="Search TPA-ID or title…" oninput="renderQueue()">
+      </div>
+      <div class="queue-provider-filter">
+        <select class="field" id="queueProviderFilter" onchange="renderQueue()">
+          <option value="">All Content Providers</option>
+        </select>
       </div>
       <div class="queue-filters">
         <button class="queue-filter-btn active" data-filter="all" onclick="setQueueFilter('all',this)">All</button>
@@ -849,20 +859,123 @@ function cleanVal(key,v){
    ============================================================ */
 var MONTHS_FULL=['January','February','March','April','May','June','July','August','September','October','November','December'];
 var MONTH_ABBR_LU={jan:'January',feb:'February',mar:'March',apr:'April',may:'May',jun:'June',jul:'July',aug:'August',sep:'September',sept:'September',oct:'October',nov:'November',dec:'December'};
+function levenshtein(a,b){
+  var m=a.length,n=b.length;
+  var dp=[];
+  for(var i=0;i<=m;i++){ dp.push([i]); }
+  for(var j=0;j<=n;j++){ dp[0][j]=j; }
+  for(i=1;i<=m;i++){
+    for(j=1;j<=n;j++){
+      if(a.charAt(i-1)===b.charAt(j-1)) dp[i][j]=dp[i-1][j-1];
+      else dp[i][j]=1+Math.min(dp[i-1][j-1],dp[i-1][j],dp[i][j-1]);
+    }
+  }
+  return dp[m][n];
+}
 function normalizeMonth(v){
   var t=String(v==null?'':v).trim();
   if(!t) return '';
   var low=t.toLowerCase();
+  // Exact full month name
   for(var i=0;i<MONTHS_FULL.length;i++){ if(MONTHS_FULL[i].toLowerCase()===low) return MONTHS_FULL[i]; }
+  // Numeric month, 1-12 (also handles "01".."12")
+  if(/^\d{1,2}$/.test(low)){
+    var n=parseInt(low,10);
+    if(n>=1 && n<=12) return MONTHS_FULL[n-1];
+  }
+  // Known abbreviations (jan, feb, sept, etc.)
   if(MONTH_ABBR_LU[low]) return MONTH_ABBR_LU[low];
   var noDot=low.replace(/\.$/,'');
   if(MONTH_ABBR_LU[noDot]) return MONTH_ABBR_LU[noDot];
+  // Partial word ("half words"), e.g. "septe", "decem" — match if it uniquely
+  // identifies one month by prefix (min 3 letters to avoid ambiguity)
+  if(noDot.length>=3 && /^[a-z]+$/.test(noDot)){
+    var matches=MONTHS_FULL.filter(function(m){ return m.toLowerCase().indexOf(noDot)===0; });
+    if(matches.length===1) return matches[0];
+  }
+  // Misspelled month, e.g. "Janarury", "Feburary" — fuzzy-match by edit
+  // distance, only auto-correcting when there's one clear closest month
+  if(noDot.length>=3 && /^[a-z]+$/.test(noDot)){
+    var dists=MONTHS_FULL.map(function(m){ return {m:m, d:levenshtein(noDot, m.toLowerCase())}; });
+    dists.sort(function(a,b){ return a.d-b.d; });
+    var top=dists[0], second=dists[1];
+    var threshold=Math.max(1, Math.round(Math.min(noDot.length, top.m.length) * 0.4));
+    if(top.d<=threshold && top.d<second.d) return top.m;
+  }
   return null;
 }
 function isValidMonth(v){
   var t=String(v==null?'':v).trim();
   if(!t) return true; // empty is not invalid, just unfilled
   return MONTHS_FULL.indexOf(t)>=0;
+}
+
+/* ============================================================
+   TITLE / DOI ↔ PDF MATCH CHECK (Ctrl+F-style substring match)
+   Extracts text from the loaded PDF via pdf.js and highlights the
+   Title / DOI fields yellow when the captured value is found in
+   the PDF's text layer.
+   ============================================================ */
+if(typeof pdfjsLib!=='undefined'){
+  try{ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
+}
+
+function normalizeForMatch(s){
+  return String(s==null?'':s).toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+}
+
+function extractPdfText(row){
+  if(!row) return Promise.resolve('');
+  if(row._pdfText!=null) return Promise.resolve(row._pdfText);
+  if(row._pdfTextPromise) return row._pdfTextPromise;
+  if(!row.pdf || typeof pdfjsLib==='undefined'){ row._pdfText=''; return Promise.resolve(''); }
+  row._pdfTextPromise=row.pdf.arrayBuffer().then(function(buf){
+    return pdfjsLib.getDocument({data:buf}).promise.then(function(pdf){
+      var maxPages=Math.min(pdf.numPages,20);
+      var pagePromises=[];
+      for(var i=1;i<=maxPages;i++){
+        pagePromises.push(pdf.getPage(i).then(function(page){
+          return page.getTextContent().then(function(tc){
+            return tc.items.map(function(it){ return it.str; }).join(' ');
+          });
+        }));
+      }
+      return Promise.all(pagePromises).then(function(pageTexts){
+        row._pdfText=normalizeForMatch(pageTexts.join(' '));
+        return row._pdfText;
+      });
+    });
+  }).catch(function(err){
+    console.warn('PDF text extraction failed for match check',err);
+    row._pdfText='';
+    return '';
+  });
+  return row._pdfTextPromise;
+}
+
+function checkPdfMatch(key,value){
+  if(key!=='title' && key!=='doi') return;
+  var el=document.getElementById('mf_'+key);
+  var badge=document.getElementById('pm_'+key);
+  if(!el) return;
+  var row=S.rowsByTpa[S.currentTpaId];
+  var text=String(value==null?'':value).trim();
+  if(!text || !row || row._pdfText==null){
+    el.classList.remove('pdf-match');
+    if(badge) badge.style.display='none';
+    return;
+  }
+  var norm=normalizeForMatch(text);
+  var found=!!norm && row._pdfText.indexOf(norm)>=0;
+  if(found){ el.classList.add('pdf-match'); if(badge) badge.style.display='inline-block'; }
+  else { el.classList.remove('pdf-match'); if(badge) badge.style.display='none'; }
+}
+
+function refreshPdfMatchChecks(){
+  var titleEl=document.getElementById('mf_title');
+  var doiEl=document.getElementById('mf_doi');
+  if(titleEl) checkPdfMatch('title',titleEl.value);
+  if(doiEl) checkPdfMatch('doi',doiEl.value);
 }
 function ts(){ return new Date().toLocaleTimeString(); }
 function addLog(msg,level){ S.log.push({time:ts(),msg:msg,level:level||'info'}); }
@@ -1247,11 +1360,36 @@ function setQueueFilter(f, btn){
 }
 window.setQueueFilter = setQueueFilter;
 
+var _lastProviderListKey=null;
+function populateProviderFilter(){
+  var sel=document.getElementById('queueProviderFilter');
+  if(!sel) return;
+  var set={};
+  S.rows.forEach(function(row){
+    var cp=row.context && row.context.contentProvider;
+    if(cp) set[cp]=true;
+  });
+  var list=Object.keys(set).sort(function(a,b){ return a.localeCompare(b); });
+  var key=list.join('|');
+  if(key===_lastProviderListKey) return;
+  _lastProviderListKey=key;
+  var cur=sel.value;
+  var html='<option value="">All Content Providers</option>';
+  list.forEach(function(p){ html+='<option value="'+escHtml(p)+'">'+escHtml(p)+'</option>'; });
+  sel.innerHTML=html;
+  if(list.indexOf(cur)>=0) sel.value=cur;
+}
+window.populateProviderFilter = populateProviderFilter;
+
 function renderQueue(){
+  populateProviderFilter();
   var search=(document.getElementById('queueSearch').value||'').toLowerCase();
+  var providerSel=document.getElementById('queueProviderFilter');
+  var providerFilter=providerSel?providerSel.value:'';
   var list=document.getElementById('queueList');
   var filtered=S.rows.filter(function(row){
     if(search && !row.tpaDisplay.toLowerCase().includes(search) && !(row.context.sourceTitle||'').toLowerCase().includes(search)) return false;
+    if(providerFilter && (row.context.contentProvider||'')!==providerFilter) return false;
     if(queueFilter==='all') return true;
     return getRecordStatus(row)===queueFilter;
   });
@@ -1311,6 +1449,12 @@ function openRecord(tpaId){
 
   // Auto-extraction hint
   attemptAutoExtract(row);
+
+  // Title/DOI ↔ PDF match check (extract PDF text, then re-check fields)
+  refreshPdfMatchChecks();
+  extractPdfText(row).then(function(){
+    if(S.currentTpaId===row.tpaId) refreshPdfMatchChecks();
+  });
 }
 window.openRecord = openRecord;
 
@@ -1455,11 +1599,13 @@ function renderMetaForm(row){
       liveValidate(f.key,this.value);
       if(f.key==='identifier'||f.key==='pageRange') crossValidateIdentifier();
       if(f.key==='month'||f.key==='day'||f.key==='year') autoFillCoverText();
+      if(f.key==='title'||f.key==='doi') checkPdfMatch(f.key,this.value);
     });
     el.addEventListener('blur',function(){
       var c=cleanVal(f.key,this.value);
       if(c!==this.value) this.value=c;
       if(f.key==='month'){ liveValidate(f.key,this.value); autoFillCoverText(); }
+      if(f.key==='title'||f.key==='doi') checkPdfMatch(f.key,this.value);
     });
     el.addEventListener('paste',function(){
       setTimeout(function(){
@@ -1468,6 +1614,7 @@ function renderMetaForm(row){
         liveValidate(f.key,el.value);
         if(f.key==='identifier'||f.key==='pageRange') crossValidateIdentifier();
         if(f.key==='month'||f.key==='day'||f.key==='year') autoFillCoverText();
+        if(f.key==='title'||f.key==='doi') checkPdfMatch(f.key,el.value);
       },0);
     });
   });
@@ -1625,11 +1772,12 @@ function renderFieldInner(key, value){
   var html='<label class="field-label" for="mf_'+key+'">'+escHtml(f.label);
   if(f.mandatory) html+='<span class="req">*</span>';
   if(conf) html+='<span class="field-conf '+conf.level+'">'+conf.text+'</span>';
+  if(key==='title'||key==='doi') html+='<span class="field-conf pdfmatch" id="pm_'+key+'" style="display:none;">📄 Found in PDF</span>';
   html+='</label>';
   if(f.textarea){
     html+='<textarea class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" rows="2">'+escHtml(value||'')+'</textarea>';
   } else if(key==='month'){
-    html+='<input class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" value="'+escHtml(value||'')+'" list="monthDatalist" autocomplete="off" placeholder="e.g. Jan, January">';
+    html+='<input class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" value="'+escHtml(value||'')+'" list="monthDatalist" autocomplete="off" placeholder="e.g. Jan, January or 1-12">';
   } else {
     html+='<input class="field'+mono+'" id="mf_'+key+'" data-key="'+key+'" value="'+escHtml(value||'')+'">';
   }
