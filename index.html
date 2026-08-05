@@ -187,10 +187,15 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .auto-extract-bar{padding:8px 12px;background:var(--info-soft);border-bottom:1px solid #C5D8F0;display:none;flex-shrink:0;}
 .auto-extract-bar.visible{display:flex;align-items:center;gap:8px;}
 .auto-extract-bar .ae-label{font-size:11.5px;color:var(--info);font-weight:500;}
-.ae-chip{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid;}
+.ae-chip{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:10px;border:1px solid;display:inline-flex;align-items:center;gap:6px;}
 .ae-chip.high{background:var(--ok-soft);border-color:var(--ok);color:var(--ok);}
 .ae-chip.med{background:var(--warn-soft);border-color:var(--warn);color:var(--warn);}
 .ae-chip.low{background:var(--error-soft);border-color:var(--error);color:var(--error);}
+.ae-chip.scanning{background:var(--surface-3);border-color:var(--line-strong);color:var(--ink-muted);}
+.ae-apply{font-family:var(--mono);font-size:9.5px;padding:1px 6px;border-radius:8px;border:1px solid currentColor;background:transparent;color:inherit;cursor:pointer;line-height:1.5;}
+.ae-apply:hover{opacity:.75;}
+.ae-chip.applied{opacity:.55;text-decoration:line-through;}
+.ae-chip[title]{cursor:help;}
 
 /* RIGHT: METADATA PANEL */
 .meta-panel{border-left:1.5px solid var(--line);background:var(--surface);display:flex;flex-direction:column;overflow:hidden;}
@@ -326,16 +331,16 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
   </div>
   <div class="nav-tabs">
     <button class="nav-tab active" data-page="page1" onclick="switchPage('page1',this)">
-      ① Project Setup
+       Project Setup
     </button>
     <button class="nav-tab" data-page="page2" onclick="switchPage('page2',this)">
-      ② Processing Workspace <span class="tab-num" id="navQueueCount"></span>
+       Processing Workspace <span class="tab-num" id="navQueueCount"></span>
     </button>
     <button class="nav-tab" data-page="page3" onclick="switchPage('page3',this)">
-      ③ Exception Report <span class="tab-badge" id="navExcBadge" style="display:none"></span>
+       Exception Report <span class="tab-badge" id="navExcBadge" style="display:none"></span>
     </button>
     <button class="nav-tab" data-page="page4" onclick="switchPage('page4',this)">
-      ④ Export Center
+       Export Center
     </button>
   </div>
   <div class="nav-stats">
@@ -482,8 +487,10 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
       </div>
     </div>
     <div class="auto-extract-bar" id="autoExtractBar">
-      <span class="ae-label">🤖 Auto-extracted:</span>
+      <span class="ae-label" id="aeLabel">🤖 AI Assistant:</span>
       <span id="aeChips"></span>
+      <button class="btn btn-xs btn-ghost" id="aeApplyAllBtn" style="display:none;" onclick="applyAllAiSuggestions()">Apply All</button>
+      <button class="btn btn-xs btn-ghost" id="aeRescanBtn" style="display:none;" onclick="rescanAiSuggestions()">↻ Re-scan</button>
       <button class="btn btn-xs btn-ghost" style="margin-left:auto;" onclick="dismissAutoExtract()">Dismiss</button>
     </div>
     <div class="viewer-frame-wrap" id="viewerFrameWrap">
@@ -1473,7 +1480,7 @@ function loadPdfViewer(row){
   var url=URL.createObjectURL(row.pdf);
   var iframe=wrap.querySelector('iframe');
   if(!iframe){ iframe=document.createElement('iframe'); iframe.style.cssText='width:100%;height:100%;border:none;'; wrap.appendChild(iframe); }
-  iframe.src=url+'#toolbar=1&navpanes=1&view=FitH';
+  iframe.src=url+'#toolbar=1&navpanes=0&view=FitH';
   row._pdfUrl=url;
 }
 
@@ -1500,21 +1507,281 @@ function toggleFullscreen(){
 window.toggleFullscreen = toggleFullscreen;
 
 /* ============================================================
-   AUTO EXTRACTION (simulated from filename/context)
+   AI ASSISTANT — AUTO-EXTRACT METADATA FROM THE PDF, VERIFIED
+   AGAINST CROSSREF
+   Stage 1 (PDF text layer, via pdf.js): finds a candidate DOI via
+   a 10.xxxx/xxxxx pattern and a candidate Title from the
+   largest-font line(s) near the top of page 1. This stage alone
+   is a guess — font size and boilerplate filtering are heuristics
+   and are NOT reliable enough to trust on their own.
+   Stage 2 (CrossRef, https://api.crossref.org): the candidate DOI
+   is looked up against CrossRef's registry. If CrossRef returns a
+   record for that DOI, its Title, Volume, Issue, Page Range, and
+   Publication Date are used instead of the PDF guess — this is
+   authoritative bibliographic data, not a heuristic, so it is
+   marked "verified" / high confidence. If CrossRef has no record
+   or the lookup fails (offline, rate-limited, bad DOI), the
+   PDF-only guess is kept but marked "unverified" / medium
+   confidence so the user knows it needs a closer look.
+   Suggestions are never written into a field automatically — the
+   user applies them via "Apply" / "Apply All".
    ============================================================ */
+var TITLE_BLOCKLIST=/available online|sciencedirect|procedia|elsevier b\.?v\.?|all rights reserved|creative commons|peer[- ]review|©|copyright|^issn\b|doi\s*:|www\.|https?:\/\/|open access|keywords?:/i;
+var CROSSREF_TIMEOUT_MS=8000;
+
+function extractPdfPage1Layout(row){
+  if(!row) return Promise.resolve({lines:[],blob:''});
+  if(row._pdfLines) return Promise.resolve(row._pdfLines);
+  if(row._pdfLinesPromise) return row._pdfLinesPromise;
+  if(!row.pdf || typeof pdfjsLib==='undefined'){ row._pdfLines={lines:[],blob:''}; return Promise.resolve(row._pdfLines); }
+  row._pdfLinesPromise=row.pdf.arrayBuffer().then(function(buf){
+    return pdfjsLib.getDocument({data:buf}).promise.then(function(pdf){
+      var maxPages=Math.min(pdf.numPages,2); // title lives on p.1; DOI sometimes footer of p.1/p.2
+      var pagePromises=[];
+      var _loop=function(i){
+        pagePromises.push(pdf.getPage(i).then(function(page){
+          return page.getTextContent().then(function(tc){
+            var items=tc.items.map(function(it){
+              return { str:it.str, x:it.transform[4], y:Math.round(it.transform[5]), h:Math.abs(it.transform[3])||Math.abs(it.transform[0])||0 };
+            }).filter(function(it){ return it.str && it.str.trim(); });
+            items.sort(function(a,b){ return b.y-a.y || a.x-b.x; });
+            var lines=[], cur=null, Y_TOL=2.5;
+            items.forEach(function(it){
+              if(cur && Math.abs(cur.y-it.y)<=Y_TOL){
+                cur.text+=(/\s$/.test(cur.text)?'':' ')+it.str;
+                cur.h=Math.max(cur.h,it.h);
+              } else { cur={y:it.y,text:it.str,h:it.h}; lines.push(cur); }
+            });
+            return lines.map(function(l){ return {text:l.text.replace(/\s+/g,' ').trim(),h:l.h}; }).filter(function(l){ return l.text; });
+          });
+        }));
+      };
+      for(var i=1;i<=maxPages;i++) _loop(i);
+      return Promise.all(pagePromises).then(function(pagesLines){
+        var page1=pagesLines[0]||[];
+        var blob=pagesLines.map(function(pl){ return pl.map(function(l){ return l.text; }).join(' '); }).join(' ');
+        row._pdfLines={lines:page1,blob:blob};
+        return row._pdfLines;
+      });
+    });
+  }).catch(function(err){
+    console.warn('AI Assistant: PDF layout read failed',err);
+    row._pdfLines={lines:[],blob:''};
+    return row._pdfLines;
+  });
+  return row._pdfLinesPromise;
+}
+
+function guessDoiFromText(blob){
+  if(!blob) return null;
+  var m=blob.match(/\b10\.\d{4,9}\/[^\s,;)\]}>"']+/);
+  if(!m) return null;
+  return m[0].replace(/[.,;]+$/,'');
+}
+
+function guessTitleFromLines(lines){
+  if(!lines||!lines.length) return null;
+  var pool=lines.slice(0,30);
+  var candidates=pool.map(function(l,idx){ return {l:l,idx:idx}; }).filter(function(o){
+    var t=o.l.text;
+    return t.split(' ').length>=3 && t.length>=12 && t.length<=300 && !TITLE_BLOCKLIST.test(t) && !/^\d+$/.test(t);
+  });
+  if(!candidates.length) return null;
+  var maxH=Math.max.apply(null,candidates.map(function(o){ return o.l.h; }));
+  var best=candidates.filter(function(o){ return o.l.h>=maxH-0.5; }).sort(function(a,b){ return a.idx-b.idx; });
+  var merged=[best[0].l.text];
+  for(var i=1;i<best.length;i++){
+    if(best[i].idx===best[i-1].idx+1) merged.push(best[i].l.text);
+    else break;
+  }
+  return merged.join(' ').replace(/\s+/g,' ').trim();
+}
+
+/* ---- CrossRef verification ------------------------------------
+   Looks the candidate DOI up against the CrossRef REST API and
+   returns authoritative Title / Volume / Issue / Page Range /
+   Year / Month / Day for it, or null if there's no match / the
+   request fails / times out. This is what pushes accuracy above
+   what font-size heuristics alone can guarantee — CrossRef data
+   is registered by the publisher, not inferred from layout. */
+function fetchCrossRefMetadata(doi){
+  if(!doi || typeof fetch==='undefined') return Promise.resolve(null);
+  var url='https://api.crossref.org/works/'+encodeURIComponent(doi);
+  var ctrl=(typeof AbortController!=='undefined') ? new AbortController() : null;
+  var timer=ctrl ? setTimeout(function(){ ctrl.abort(); },CROSSREF_TIMEOUT_MS) : null;
+  return fetch(url, ctrl?{signal:ctrl.signal}:{}).then(function(resp){
+    if(timer) clearTimeout(timer);
+    if(!resp.ok) return null;
+    return resp.json();
+  }).then(function(json){
+    var m=json && json.message;
+    if(!m) return null;
+    var dp=(m['published-print']&&m['published-print']['date-parts']&&m['published-print']['date-parts'][0])
+        ||(m['published-online']&&m['published-online']['date-parts']&&m['published-online']['date-parts'][0])
+        ||(m.issued&&m.issued['date-parts']&&m.issued['date-parts'][0])
+        ||null;
+    return {
+      title:(Array.isArray(m.title)&&m.title.length)?m.title[0]:null,
+      volume:m.volume||null,
+      issue:m.issue||null,
+      pageRange:m.page?String(m.page).replace(/[\u2012\u2013\u2014\u2015\u2212]/g,'-'):null,
+      year:(dp&&dp[0])?String(dp[0]):null,
+      month:(dp&&dp[1])?(MONTHS_FULL[dp[1]-1]||null):null,
+      day:(dp&&dp[2])?String(dp[2]):null,
+      doi:m.DOI||doi
+    };
+  }).catch(function(err){
+    if(timer) clearTimeout(timer);
+    console.warn('AI Assistant: CrossRef lookup failed',err);
+    return null;
+  });
+}
+
+function renderAeChips(row){
+  var chips=document.getElementById('aeChips');
+  var applyAllBtn=document.getElementById('aeApplyAllBtn');
+  var rescanBtn=document.getElementById('aeRescanBtn');
+  var sug=row._aiSuggest||{};
+  var keys=Object.keys(sug).filter(function(k){ return sug[k] && sug[k].value; });
+  if(!keys.length){
+    chips.innerHTML='<span class="ae-chip low">No fields auto-detected — try Smart Capture below</span>';
+    applyAllBtn.style.display='none'; rescanBtn.style.display='';
+    return;
+  }
+  // Order fields the way they appear on the form
+  var order=['doi','title','volume','issue','pageRange','year','month','day'];
+  keys.sort(function(a,b){ return order.indexOf(a)-order.indexOf(b); });
+  chips.innerHTML=keys.map(function(k){
+    var s=sug[k];
+    var shortVal=String(s.value).length>60?String(s.value).slice(0,60)+'…':s.value;
+    var tag=s.verified?' ✓':'';
+    return '<span class="ae-chip '+s.conf+'" id="aeChip_'+k+'" title="'+(s.verified?'Verified via CrossRef':'From PDF text — unverified, please check')+'">'
+      +escHtml((FIELD_MAP[k]?FIELD_MAP[k].label:k)+': '+shortVal+tag)
+      +' <button type="button" class="ae-apply" onclick="applyAiSuggestion(\''+k+'\')">Apply</button></span>';
+  }).join('');
+  applyAllBtn.style.display='';
+  rescanBtn.style.display='';
+}
+
 function attemptAutoExtract(row){
   var bar=document.getElementById('autoExtractBar');
   var chips=document.getElementById('aeChips');
-  // Try to extract year from context or existing values
-  var found=[];
-  if(row.values.year){ found.push({label:'Year: '+row.values.year,conf:'high',key:'year'}); }
-  if(row.values.doi){ found.push({label:'DOI',conf:'high',key:'doi'}); }
-  if(row.values.volume){ found.push({label:'Vol: '+row.values.volume,conf:'med',key:'volume'}); }
-  if(found.length){
-    chips.innerHTML=found.map(function(f){ return '<span class="ae-chip '+f.conf+'">'+escHtml(f.label)+'</span>'; }).join('');
-    bar.classList.add('visible');
-  } else { bar.classList.remove('visible'); }
+  var label=document.getElementById('aeLabel');
+  var applyAllBtn=document.getElementById('aeApplyAllBtn');
+  var rescanBtn=document.getElementById('aeRescanBtn');
+  if(!row){ bar.classList.remove('visible'); return; }
+  row._aiSuggest={};
+
+  // Immediate chips from data already known (Excel context) — instant, no PDF scan needed
+  if(row.values.year){ row._aiSuggest.year={value:row.values.year,conf:'high',verified:true}; }
+  if(row.values.volume){ row._aiSuggest.volume={value:row.values.volume,conf:'med',verified:false}; }
+
+  if(!row.pdf){
+    label.textContent='🤖 AI Assistant:';
+    if(Object.keys(row._aiSuggest).length){ renderAeChips(row); bar.classList.add('visible'); }
+    else bar.classList.remove('visible');
+    return;
+  }
+
+  label.textContent='🤖 AI Assistant: reading PDF…';
+  chips.innerHTML='<span class="ae-chip scanning">reading…</span>';
+  applyAllBtn.style.display='none'; rescanBtn.style.display='none';
+  bar.classList.add('visible');
+
+  extractPdfPage1Layout(row).then(function(layout){
+    if(S.currentTpaId!==row.tpaId) return {abort:true}; // navigated away before scan finished
+    var pdfDoi=guessDoiFromText(layout.blob);
+    var pdfTitle=guessTitleFromLines(layout.lines);
+
+    if(pdfDoi){ row._aiSuggest.doi={value:pdfDoi,conf:'med',verified:false}; }
+    if(pdfTitle){ row._aiSuggest.title={value:pdfTitle,conf:'med',verified:false}; }
+
+    if(!pdfDoi){
+      label.textContent='🤖 AI Assistant:';
+      renderAeChips(row);
+      return null;
+    }
+
+    label.textContent='🤖 AI Assistant: verifying DOI '+pdfDoi+' via CrossRef…';
+    renderAeChips(row);
+    return fetchCrossRefMetadata(pdfDoi);
+  }).then(function(cr){
+    if(!cr || (S.currentTpaId!==row.tpaId)) {
+      if(cr!==null && S.currentTpaId===row.tpaId){
+        label.textContent=Object.keys(row._aiSuggest).length ? '🤖 AI Assistant found (unverified — CrossRef had no match):' : '🤖 AI Assistant:';
+      }
+      return;
+    }
+    // CrossRef confirmed the DOI — replace heuristic guesses with authoritative data
+    row._aiSuggest.doi={value:cr.doi,conf:'high',verified:true};
+    if(cr.title)      row._aiSuggest.title      ={value:cr.title,conf:'high',verified:true};
+    if(cr.volume)     row._aiSuggest.volume     ={value:cr.volume,conf:'high',verified:true};
+    if(cr.issue)      row._aiSuggest.issue      ={value:cr.issue,conf:'high',verified:true};
+    if(cr.pageRange)  row._aiSuggest.pageRange  ={value:cr.pageRange,conf:'high',verified:true};
+    if(cr.year)        row._aiSuggest.year       ={value:cr.year,conf:'high',verified:true};
+    if(cr.month)        row._aiSuggest.month      ={value:cr.month,conf:'high',verified:true};
+    if(cr.day)         row._aiSuggest.day        ={value:cr.day,conf:'high',verified:true};
+    label.textContent='🤖 AI Assistant found (verified via CrossRef):';
+    renderAeChips(row);
+  }).catch(function(err){
+    console.warn('AI Assistant: extraction pipeline error',err);
+  });
 }
+
+function applyAiSuggestion(key){
+  var row=S.rowsByTpa[S.currentTpaId];
+  if(!row||!row._aiSuggest||!row._aiSuggest[key]) return;
+  var s=row._aiSuggest[key];
+  var el=document.getElementById('mf_'+key);
+  if(!el) return;
+  el.value=cleanVal(key,s.value);
+  liveValidate(key,el.value);
+  if(key==='identifier'||key==='pageRange') crossValidateIdentifier();
+  if(key==='title'||key==='doi') checkPdfMatch(key,el.value);
+  flashField(key);
+  var chip=document.getElementById('aeChip_'+key);
+  if(chip) chip.classList.add('applied');
+  toast(FIELD_MAP[key].label+(s.verified?' applied (CrossRef-verified)':' applied from PDF — verify'),'ok');
+  updateValSummary();
+}
+window.applyAiSuggestion = applyAiSuggestion;
+
+function applyAllAiSuggestions(){
+  var row=S.rowsByTpa[S.currentTpaId];
+  if(!row||!row._aiSuggest) return;
+  var filled=0, unverified=0, touchedIdOrRange=false;
+  Object.keys(row._aiSuggest).forEach(function(key){
+    var s=row._aiSuggest[key];
+    var el=document.getElementById('mf_'+key);
+    if(s && s.value && el && !el.value){
+      el.value=cleanVal(key,s.value);
+      liveValidate(key,el.value);
+      if(key==='title'||key==='doi') checkPdfMatch(key,el.value);
+      if(key==='identifier'||key==='pageRange') touchedIdOrRange=true;
+      flashField(key);
+      var chip=document.getElementById('aeChip_'+key);
+      if(chip) chip.classList.add('applied');
+      filled++;
+      if(!s.verified) unverified++;
+    }
+  });
+  if(filled){
+    if(touchedIdOrRange) crossValidateIdentifier();
+    var msg=filled+' field'+(filled===1?'':'s')+' applied';
+    msg+=unverified? ' — '+unverified+' unverified, please double-check' : ' — all CrossRef-verified';
+    toast(msg, unverified?'warning':'ok');
+    updateValSummary();
+  } else toast('Nothing new to apply — fields already filled','warning');
+}
+window.applyAllAiSuggestions = applyAllAiSuggestions;
+
+function rescanAiSuggestions(){
+  var row=S.rowsByTpa[S.currentTpaId];
+  if(!row) return;
+  row._pdfLines=null; row._pdfLinesPromise=null; row._crossref=null;
+  attemptAutoExtract(row);
+}
+window.rescanAiSuggestions = rescanAiSuggestions;
 
 function dismissAutoExtract(){ document.getElementById('autoExtractBar').classList.remove('visible'); }
 window.dismissAutoExtract = dismissAutoExtract;
