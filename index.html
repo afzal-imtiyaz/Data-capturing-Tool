@@ -487,7 +487,7 @@ table.exc-table{width:100%;border-collapse:collapse;font-size:12.5px;}
       </div>
     </div>
     <div class="auto-extract-bar" id="autoExtractBar">
-      <span class="ae-label" id="aeLabel">🤖 AI Assistant:</span>
+      <span class="ae-label" id="aeLabel">🤖 Auto Extractor:</span>
       <span id="aeChips"></span>
       <button class="btn btn-xs btn-ghost" id="aeApplyAllBtn" style="display:none;" onclick="applyAllAiSuggestions()">Apply All</button>
       <button class="btn btn-xs btn-ghost" id="aeRescanBtn" style="display:none;" onclick="rescanAiSuggestions()">↻ Re-scan</button>
@@ -1507,7 +1507,7 @@ function toggleFullscreen(){
 window.toggleFullscreen = toggleFullscreen;
 
 /* ============================================================
-   AI ASSISTANT — AUTO-EXTRACT METADATA FROM THE PDF, VERIFIED
+   AUTO EXTRACTOR — AUTO-EXTRACT METADATA FROM THE PDF, VERIFIED
    AGAINST CROSSREF
    Stage 1 (PDF text layer, via pdf.js): finds a candidate DOI via
    a 10.xxxx/xxxxx pattern and a candidate Title from the
@@ -1565,7 +1565,7 @@ function extractPdfPage1Layout(row){
       });
     });
   }).catch(function(err){
-    console.warn('AI Assistant: PDF layout read failed',err);
+    console.warn('Auto Extractor: PDF layout read failed',err);
     row._pdfLines={lines:[],blob:''};
     return row._pdfLines;
   });
@@ -1632,7 +1632,7 @@ function fetchCrossRefMetadata(doi){
     };
   }).catch(function(err){
     if(timer) clearTimeout(timer);
-    console.warn('AI Assistant: CrossRef lookup failed',err);
+    console.warn('Auto Extractor: CrossRef lookup failed',err);
     return null;
   });
 }
@@ -1677,13 +1677,13 @@ function attemptAutoExtract(row){
   if(row.values.volume){ row._aiSuggest.volume={value:row.values.volume,conf:'med',verified:false}; }
 
   if(!row.pdf){
-    label.textContent='🤖 AI Assistant:';
+    label.textContent='🤖 Auto Extractor:';
     if(Object.keys(row._aiSuggest).length){ renderAeChips(row); bar.classList.add('visible'); }
     else bar.classList.remove('visible');
     return;
   }
 
-  label.textContent='🤖 AI Assistant: reading PDF…';
+  label.textContent='🤖 Auto Extractor: reading PDF…';
   chips.innerHTML='<span class="ae-chip scanning">reading…</span>';
   applyAllBtn.style.display='none'; rescanBtn.style.display='none';
   bar.classList.add('visible');
@@ -1697,18 +1697,18 @@ function attemptAutoExtract(row){
     if(pdfTitle){ row._aiSuggest.title={value:pdfTitle,conf:'med',verified:false}; }
 
     if(!pdfDoi){
-      label.textContent='🤖 AI Assistant:';
+      label.textContent='🤖 Auto Extractor:';
       renderAeChips(row);
       return null;
     }
 
-    label.textContent='🤖 AI Assistant: verifying DOI '+pdfDoi+' via CrossRef…';
+    label.textContent='🤖 Auto Extractor: verifying DOI '+pdfDoi+' via CrossRef…';
     renderAeChips(row);
     return fetchCrossRefMetadata(pdfDoi);
   }).then(function(cr){
     if(!cr || (S.currentTpaId!==row.tpaId)) {
       if(cr!==null && S.currentTpaId===row.tpaId){
-        label.textContent=Object.keys(row._aiSuggest).length ? '🤖 AI Assistant found (unverified — CrossRef had no match):' : '🤖 AI Assistant:';
+        label.textContent=Object.keys(row._aiSuggest).length ? '🤖 Auto Extractor found (unverified — CrossRef had no match):' : '🤖 Auto Extractor:';
       }
       return;
     }
@@ -1721,10 +1721,10 @@ function attemptAutoExtract(row){
     if(cr.year)        row._aiSuggest.year       ={value:cr.year,conf:'high',verified:true};
     if(cr.month)        row._aiSuggest.month      ={value:cr.month,conf:'high',verified:true};
     if(cr.day)         row._aiSuggest.day        ={value:cr.day,conf:'high',verified:true};
-    label.textContent='🤖 AI Assistant found (verified via CrossRef):';
+    label.textContent='🤖 Auto Extractor found (verified via CrossRef):';
     renderAeChips(row);
   }).catch(function(err){
-    console.warn('AI Assistant: extraction pipeline error',err);
+    console.warn('Auto Extractor: extraction pipeline error',err);
   });
 }
 
